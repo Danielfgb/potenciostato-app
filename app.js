@@ -23,7 +23,7 @@ const FS_V = 1.4;
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => Array.from(document.querySelectorAll(s));
 
-const APP_VERSION = '2026-11-09-c';
+const APP_VERSION = '2026-11-09-d';
 
 function withTimeout(p, ms, what) {
   return Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error(`Sin respuesta al ${what} (${ms / 1000} s)`)), ms))]);
@@ -103,7 +103,7 @@ class BleLink {
 class SimLink {
   constructor() {
     this.onText = () => {}; this.onData = () => {}; this.onClose = () => {}; this.kind = 'sim';
-    this.cfg = { glu: 100, redox: false };
+    this.cfg = { glu: 100, redox: true };
     this.run = 0; this.timer = null; this.settleTimer = null;
   }
 
@@ -171,7 +171,36 @@ class SimLink {
     this.wp = wp; this.seg = 0; this.eCur = es; this.dE = dE; this.first = true; this.E = es; this.prevE = es;
     this.eStep = es - 120;
     this.tOff = 1.0;
+    this.df = null;
+    if (this.cfg.redox) {
+      this._diffInit(sps, total);
+      for (let k = 0, m = Math.round(1.0 * sps); k < m; k++) this._diffStep(es);   // 1 s de preelectrólisis en E inicial
+    }
     this.settleTimer = setTimeout(() => { this.settleTimer = null; this._loop(); }, 1000);
+  }
+
+  // Par redox reversible/cuasi-reversible (ferri/ferrocianuro 5 mM) con difusión lineal semi-infinita:
+  // diferencias finitas explícitas; O + e ⇌ R, DO = DR, así CO + CR = C* en todo punto y solo se resuelve CR.
+  // Condición en el electrodo: Butler-Volmer con k0 finito. Corriente catódica positiva (convención de la app).
+  _diffInit(sps, total) {
+    const D = 7.6e-6, dt = 1 / sps, lam = 0.4, dx = Math.sqrt(D * dt / lam);   // cm², s, cm
+    const T = total / sps + 2, N = Math.min(4000, Math.ceil(6 * Math.sqrt(D * T) / dx) + 8);
+    this.df = { D, dx, lam, N, CR: new Float64Array(N), tmp: new Float64Array(N), C: 5e-6, A: 0.07, k0: 0.006, alpha: 0.5, E0: 220 };
+  }
+
+  _diffStep(E_mV) {
+    const d = this.df, CR = d.CR, nx = d.tmp, N = d.N;
+    const eta = 38.92 * (E_mV - d.E0) / 1000;                       // F/RT · (E − E0')
+    const kf = d.k0 * Math.exp(-d.alpha * eta), kb = d.k0 * Math.exp((1 - d.alpha) * eta);
+    const g = d.D / (2 * d.dx);
+    const CR0 = (kf * d.C + g * (4 * CR[1] - CR[2])) / (3 * g + kf + kb);
+    CR[0] = CR0;
+    const iA = 96485 * d.A * (kf * (d.C - CR0) - kb * CR0);          // A; reducción (O→R) positiva
+    nx[0] = CR0;
+    for (let i = 1; i < N - 1; i++) nx[i] = CR[i] + d.lam * (CR[i + 1] - 2 * CR[i] + CR[i - 1]);
+    nx[N - 1] = 0;
+    d.CR = nx; d.tmp = CR;
+    return iA * 1e9;                                                  // nA
   }
 
   _autoRange(i_nA) {
@@ -221,13 +250,9 @@ class SimLink {
       i_nA += -0.02 * t + (this.eStep < 0 ? 25 : -25) * Math.exp(-t / 15);
       if (dir !== 0) {
         const sr = Math.abs(dE / dt) / 1000;
-        i_nA += -dir * 20 * sr * 1000;
-        if (this.cfg.redox) {
-          const ip = 58.6 * Math.sqrt(sr / 0.05), w = 28;
-          const g = (x) => { const e = Math.exp(x); return 4 * e / ((1 + e) * (1 + e)); };
-          i_nA += dir > 0 ? -ip * 1000 * g((this.E - 250) / w) : ip * 1000 * g((this.E - 190) / w);
-        }
+        i_nA += -dir * 5 * sr * 1000;                       // corriente capacitiva: C·dE/dt con C ≈ 5 µF
       }
+      if (this.mode === 'cv' && this.cfg.redox && this.df) i_nA += this._diffStep(this.E);   // corriente faradaica por difusión
       e_mV = this.E + 0.03 * this.gauss();
     }
     i_nA += Math.hypot(3.7e-6 / rf * 1e9, 0.3) * this.gauss();
@@ -440,6 +465,15 @@ function glucose(meanNA) {
   return slope > 0 ? Math.max(0, (meanNA - intercept) / slope) : null;
 }
 
+// Si la señal llega al límite del rango, la gráfica se aplana ("recortada"): se avisa en pantalla.
+function satNote(r) {
+  const rg = RANGES[r.rng]; if (!rg) return '';
+  const lim = FS_V / rg.rf * 1e9 * 0.98;                    // nA
+  if (!r.i.some((v) => Math.abs(v) >= lim)) return '';
+  return r.rng > 0 ? ` · ⚠ señal recortada en ${rg.name} (±${rg.fs.replace('±', '')}): usa un rango menor, p. ej. ${RANGES[r.rng - 1].short}`
+                   : ' · ⚠ señal recortada en 10 kΩ (el rango máximo): baja la velocidad o la concentración';
+}
+
 function refreshStats() {
   const r = S.run, n = r.i.length, meta = $('#rMeta');
   $('#btnCsv').disabled = n === 0; $('#btnCsv2').disabled = n === 0;
@@ -463,13 +497,13 @@ function refreshStats() {
     tile(1, labels[0], fmtI(r.i[kmin]), `en ${r.e[kmin].toFixed(0)} mV`);
     tile(2, labels[1], fmtI(r.i[kmax]), `en ${r.e[kmax].toFixed(0)} mV`);
     tile(3, labels[2], Math.abs(r.e[kmin] - r.e[kmax]).toFixed(0) + ' mV', 'entre picos');
-    meta.textContent = `${n} muestras · rango ${RANGE_NAME[r.rng] ?? '–'}`;
+    meta.textContent = `${n} muestras · rango ${RANGE_NAME[r.rng] ?? '–'}` + satNote(r);
     return;
   }
   const g = glucose(m);
   tile(1, labels[0], fmtI(r.i[n - 1])); tile(2, labels[1], fmtI(m), 'σ ' + fmtI(sd));
   tile(3, labels[2], g === null ? '–' : g.toFixed(1) + ' µM', 'según calibración');
-  meta.textContent = `${n} muestras · rango ${RANGE_NAME[r.rng] ?? '–'}`;
+  meta.textContent = `${n} muestras · rango ${RANGE_NAME[r.rng] ?? '–'}` + satNote(r);
 }
 
 // ------------------------------------------------------------------ historial de mediciones

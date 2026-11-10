@@ -194,7 +194,7 @@ label.cal input, label.cal select { font:inherit; padding:7px 9px; border:1px so
         <h2>Simulador</h2>
         <div class="row">
           <label class="cal">Glucosa simulada (µM)<input id="simGlu" type="number" value="100" min="0" step="10"></label>
-          <label class="cal">Par redox (CV)<select id="simRedox"><option value="0">Apagado</option><option value="1">Ferri/ferrocianuro 5 mM</option></select></label>
+          <label class="cal">Par redox (CV)<select id="simRedox"><option value="0">Apagado (solo corriente capacitiva)</option><option value="1" selected>Ferri/ferrocianuro 5 mM (difusión)</option></select></label>
         </div>
         <div class="row" style="margin-top:10px"><button id="btnSimCfg" class="btn sm" disabled>Aplicar</button></div>
         <p class="hint" id="simHint">Disponible al conectar el simulador.</p>
@@ -216,10 +216,10 @@ label.cal input, label.cal select { font:inherit; padding:7px 9px; border:1px so
     <button data-page="aj"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>Ajustes</button>
   </nav>
 </div>
-<script src="app.js?v=2026-11-09-c"></script>
+<script src="app.js?v=2026-11-09-d"></script>
 <script>
   // Si el navegador guardó un app.js viejo con este index.html, los botones no responden: se avisa en pantalla.
-  if (typeof APP_VERSION === 'undefined' || APP_VERSION !== '2026-11-09-c') {
+  if (typeof APP_VERSION === 'undefined' || APP_VERSION !== '2026-11-09-d') {
     var d = document.createElement('div');
     d.style.cssText = 'position:fixed;left:12px;right:12px;top:12px;z-index:99;background:#3a1010;color:#fff;border:1px solid #ff6b6b;border-radius:10px;padding:12px;font:14px system-ui';
     d.innerHTML = 'Tu navegador guardó una versión vieja de la app y no responde bien. <a style="color:#3ddc97" href="?v=' + Date.now() + '">Pulsa aquí para recargarla</a>.';
