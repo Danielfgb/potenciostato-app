@@ -49,6 +49,8 @@ p { margin:0; }
 .plotbox { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:8px 4px 0; }
 .plotcap { font-size:.78rem; color:var(--muted); padding:0 10px 2px; display:flex; justify-content:space-between; }
 canvas { width:100%; height:min(52vh, 380px); min-height:260px; display:block; }
+.err { border-color:var(--bad); }
+.err p { font-size:.88rem; color:var(--ink); overflow-wrap:anywhere; }
 .par { background:var(--card); border:1px solid var(--line); border-radius:12px; }
 .par summary { list-style:none; cursor:pointer; padding:11px 14px; font-size:.9rem; color:var(--ink); display:flex; justify-content:space-between; align-items:center; gap:10px; }
 .par summary::-webkit-details-marker { display:none; }
@@ -91,6 +93,10 @@ label.cal input, label.cal select { font:inherit; padding:7px 9px; border:1px so
 
   <main>
     <section id="pg-medir" class="page">
+      <div id="err" class="card err" role="alert" hidden>
+        <p id="errMsg"></p>
+        <div class="row" style="margin-top:8px"><button id="errX" class="btn sm" type="button">Cerrar</button></div>
+      </div>
       <div id="connCard" class="card">
         <h2>Conectar</h2>
         <p style="font-size:.92rem">Conecta el potenciostato por Bluetooth, o prueba la app con el simulador.</p>
@@ -210,6 +216,15 @@ label.cal input, label.cal select { font:inherit; padding:7px 9px; border:1px so
     <button data-page="aj"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>Ajustes</button>
   </nav>
 </div>
-<script src="app.js"></script>
+<script src="app.js?v=2026-11-09-c"></script>
+<script>
+  // Si el navegador guardó un app.js viejo con este index.html, los botones no responden: se avisa en pantalla.
+  if (typeof APP_VERSION === 'undefined' || APP_VERSION !== '2026-11-09-c') {
+    var d = document.createElement('div');
+    d.style.cssText = 'position:fixed;left:12px;right:12px;top:12px;z-index:99;background:#3a1010;color:#fff;border:1px solid #ff6b6b;border-radius:10px;padding:12px;font:14px system-ui';
+    d.innerHTML = 'Tu navegador guardó una versión vieja de la app y no responde bien. <a style="color:#3ddc97" href="?v=' + Date.now() + '">Pulsa aquí para recargarla</a>.';
+    document.body.appendChild(d);
+  }
+</script>
 </body>
 </html>

@@ -23,6 +23,20 @@ const FS_V = 1.4;
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => Array.from(document.querySelectorAll(s));
 
+const APP_VERSION = '2026-11-09-c';
+
+function withTimeout(p, ms, what) {
+  return Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error(`Sin respuesta al ${what} (${ms / 1000} s)`)), ms))]);
+}
+// Web Bluetooth falla a veces al primer intento (GATT ocupado); se reintenta unas veces.
+async function retry(fn, tries = 3, wait = 600) {
+  let last;
+  for (let k = 0; k < tries; k++) {
+    try { return await fn(); } catch (e) { last = e; if (k < tries - 1) await new Promise((r) => setTimeout(r, wait)); }
+  }
+  throw last;
+}
+
 // ------------------------------------------------------------------ registro del equipo
 function log(msg) {
   const el = $('#log');
@@ -35,30 +49,51 @@ function log(msg) {
 class BleLink {
   constructor() { this.onText = () => {}; this.onData = () => {}; this.onClose = () => {}; this.kind = 'ble'; }
 
-  async connect() {
+  // Conecta y localiza las características. `step(texto)` informa del avance a la interfaz.
+  async connect(step = () => {}) {
     if (!navigator.bluetooth) throw new Error('Este navegador no tiene Web Bluetooth (usa Chrome en Android o en el PC).');
+    this.step = 'buscar dispositivo'; step('Elige el dispositivo…');
     this.device = await navigator.bluetooth.requestDevice({
       filters: [{ services: [UUID.service] }, { namePrefix: 'Poten' }],
       optionalServices: [UUID.service],
     });
     this.device.addEventListener('gattserverdisconnected', () => this.onClose());
-    const server = await this.device.gatt.connect();
-    const svc = await server.getPrimaryService(UUID.service);
-    this.cmd = await svc.getCharacteristic(UUID.cmd);
-    this.data = await svc.getCharacteristic(UUID.data);
-    this.status = await svc.getCharacteristic(UUID.status);
+    try {
+      this.step = 'conectar GATT'; step('Conectando…');
+      const server = await retry(() => withTimeout(this.device.gatt.connect(), 15000, 'conectar'));
+      this.step = 'buscar el servicio'; step('Buscando el servicio…');
+      const svc = await retry(() => withTimeout(server.getPrimaryService(UUID.service), 10000, 'servicio'));
+      this.step = 'buscar características';
+      this.cmd = await retry(() => svc.getCharacteristic(UUID.cmd));
+      this.data = await retry(() => svc.getCharacteristic(UUID.data));
+      this.status = await retry(() => svc.getCharacteristic(UUID.status));
+    } catch (e) {
+      try { this.device.gatt.disconnect(); } catch (x) { /* ya desconectado */ }
+      throw e;
+    }
+  }
+
+  // Activa las notificaciones y pide la información del equipo. Si falla, la conexión sigue (se avisa).
+  async begin(step = () => {}) {
     const dec = new TextDecoder();
     this.status.addEventListener('characteristicvaluechanged', (e) => this.onText(dec.decode(e.target.value)));
     this.data.addEventListener('characteristicvaluechanged', (e) => this.onData(e.target.value));
-    await this.status.startNotifications();
-    await this.data.startNotifications();
+    this.step = 'activar notificaciones'; step('Activando notificaciones…');
+    await retry(() => withTimeout(this.status.startNotifications(), 10000, 'notificaciones de estado'));
+    await retry(() => withTimeout(this.data.startNotifications(), 10000, 'notificaciones de datos'));
+    this.step = 'pedir información'; step('Pidiendo información…');
     await this.send({ c: 'info' });
   }
 
   async send(obj) {
     const bytes = new TextEncoder().encode(JSON.stringify(obj));
-    if (this.cmd.writeValueWithResponse) await this.cmd.writeValueWithResponse(bytes);
-    else await this.cmd.writeValue(bytes);
+    try {
+      if (this.cmd.writeValueWithResponse) await this.cmd.writeValueWithResponse(bytes);
+      else await this.cmd.writeValue(bytes);
+    } catch (e) {
+      if (this.cmd.writeValueWithoutResponse) await this.cmd.writeValueWithoutResponse(bytes);   // el equipo también acepta escritura sin respuesta
+      else throw e;
+    }
   }
 
   disconnect() { if (this.device && this.device.gatt.connected) this.device.gatt.disconnect(); }
@@ -71,6 +106,8 @@ class SimLink {
     this.cfg = { glu: 100, redox: false };
     this.run = 0; this.timer = null; this.settleTimer = null;
   }
+
+  async begin() {}
 
   async connect() {
     setTimeout(() => this._info(), 30);
@@ -550,18 +587,45 @@ async function send(obj) {
   try { await S.link.send(obj); } catch (e) { log('error al enviar: ' + e.message); }
 }
 
+function showErr(msg) { $('#errMsg').textContent = msg; $('#err').hidden = false; }
+function clearErr() { $('#err').hidden = true; }
+
+function explain(e, step) {
+  const m = `${e.name || 'Error'}: ${e.message || e}`.replace(/\.+$/, '');
+  let hint = '';
+  if (/not found|no services|no characteristics/i.test(m)) hint = ' Quita "Potenciostato" de los dispositivos Bluetooth del teléfono o del PC, reinicia el ESP32 y vuelve a intentar: el sistema puede guardar una lista de servicios vieja.';
+  else if (/GATT|NetworkError|Unknown ATT|disconnected/i.test(m)) hint = ' Acerca el ESP32, reinícialo (botón RST) y vuelve a intentar. Si otro programa o pestaña está conectado, ciérralo.';
+  else if (/Sin respuesta/i.test(m)) hint = ' El equipo no contestó; reinicia el ESP32 e inténtalo de nuevo.';
+  return `No se pudo conectar (paso: ${step || '?'}). ${m}.${hint}`;
+}
+
 async function connect(link) {
   const chip = $('#chip');
+  const step = (t) => { chip.textContent = t; chip.className = 'chip run'; };
+  clearErr();
+  link.onText = onText; link.onData = onData;
+  link.onClose = () => { S.link = null; S.running = false; S.bat = null; log('desconectado'); updateButtons(); };
+  step('Conectando…');
   try {
-    link.onText = onText; link.onData = onData;
-    link.onClose = () => { S.link = null; S.running = false; S.bat = null; log('desconectado'); updateButtons(); };
-    chip.textContent = 'Conectando…'; chip.className = 'chip run';
-    await link.connect();
-    S.link = link; S.textBuf = '';
-    log(link.kind === 'sim' ? 'simulador conectado' : 'BLE conectado');
+    await link.connect(step);
+  } catch (e) {
+    S.link = null; updateButtons();
+    if (e && e.name === 'NotFoundError' && /cancel/i.test(e.message)) { log('selección de dispositivo cancelada'); return; }
+    log('no se pudo conectar (' + (link.step || '?') + '): ' + (e.name || '') + ' ' + e.message);
+    showErr(explain(e, link.step));
+    return;
+  }
+  // GATT listo: se muestra la conexión de inmediato y luego se activan las notificaciones.
+  S.link = link; S.textBuf = '';
+  log(link.kind === 'sim' ? 'simulador conectado' : 'BLE conectado');
+  updateButtons();
+  try {
+    await link.begin(step);
     updateButtons();
   } catch (e) {
-    log('no se pudo conectar: ' + e.message); S.link = null; updateButtons();
+    log('aviso al iniciar (' + (link.step || '?') + '): ' + (e.name || '') + ' ' + e.message);
+    showErr(`Conectado, pero falló el paso "${link.step || '?'}": ${e.name || 'Error'}: ${e.message}. Pulsa Desconectar (Ajustes) y vuelve a conectar.`);
+    updateButtons();
   }
 }
 
@@ -581,6 +645,7 @@ function downloadCsv(r) {
 }
 
 function wire() {
+  $('#errX').onclick = clearErr;
   $('#btnBle').onclick = () => connect(new BleLink());
   $('#btnSim').onclick = () => connect(new SimLink());
   $('#btnDisc').onclick = () => { if (S.link) S.link.disconnect(); };
