@@ -1,0 +1,454 @@
+'use strict';
+// App web del potenciostato: Web Bluetooth (Chrome en Android o en el PC) + simulador.
+// Protocolo: ../docs/PROTOCOLO_BLE.md
+
+const UUID = {
+  service: '4c5d0001-8a3e-4f6b-9a2d-2f6e0c1b7a10',
+  cmd:     '4c5d0002-8a3e-4f6b-9a2d-2f6e0c1b7a10',
+  data:    '4c5d0003-8a3e-4f6b-9a2d-2f6e0c1b7a10',
+  status:  '4c5d0004-8a3e-4f6b-9a2d-2f6e0c1b7a10',
+};
+const RF = [1e3, 1e4, 1e5, 1e6];
+const RANGE_NAME = ['1 kΩ', '10 kΩ', '100 kΩ', '1 MΩ'];
+const FS_V = 1.2;
+
+const $ = (s) => document.querySelector(s);
+const $$ = (s) => Array.from(document.querySelectorAll(s));
+
+// ------------------------------------------------------------------ registro
+function log(msg) {
+  const el = $('#log');
+  const t = new Date().toLocaleTimeString();
+  el.textContent += `${t}  ${msg}\n`;
+  el.scrollTop = el.scrollHeight;
+}
+
+// ------------------------------------------------------------------ enlace BLE real
+class BleLink {
+  constructor() { this.onText = () => {}; this.onData = () => {}; this.onClose = () => {}; this.kind = 'ble'; }
+
+  async connect() {
+    if (!navigator.bluetooth) throw new Error('Este navegador no tiene Web Bluetooth (usa Chrome en Android o en el PC).');
+    this.device = await navigator.bluetooth.requestDevice({
+      filters: [{ services: [UUID.service] }, { namePrefix: 'Poten' }],
+      optionalServices: [UUID.service],
+    });
+    this.device.addEventListener('gattserverdisconnected', () => this.onClose());
+    const server = await this.device.gatt.connect();
+    const svc = await server.getPrimaryService(UUID.service);
+    this.cmd = await svc.getCharacteristic(UUID.cmd);
+    this.data = await svc.getCharacteristic(UUID.data);
+    this.status = await svc.getCharacteristic(UUID.status);
+    const dec = new TextDecoder();
+    this.status.addEventListener('characteristicvaluechanged', (e) => this.onText(dec.decode(e.target.value)));
+    this.data.addEventListener('characteristicvaluechanged', (e) => this.onData(e.target.value));
+    await this.status.startNotifications();
+    await this.data.startNotifications();
+    await this.send({ c: 'info' });
+  }
+
+  async send(obj) {
+    const bytes = new TextEncoder().encode(JSON.stringify(obj));
+    if (this.cmd.writeValueWithResponse) await this.cmd.writeValueWithResponse(bytes);
+    else await this.cmd.writeValue(bytes);
+  }
+
+  disconnect() { if (this.device && this.device.gatt.connected) this.device.gatt.disconnect(); }
+}
+
+// ------------------------------------------------------------------ dispositivo simulado (mismo protocolo)
+class SimLink {
+  constructor() {
+    this.onText = () => {}; this.onData = () => {}; this.onClose = () => {}; this.kind = 'sim';
+    this.cfg = { glu: 100, redox: false };
+    this.run = 0; this.timer = null; this.settleTimer = null;
+  }
+
+  async connect() {
+    setTimeout(() => this._info(), 30);
+    this.stTimer = setInterval(() => { if (!this.timer && !this.settleTimer) this._status(); }, 2000);
+    setTimeout(() => this._status(), 80);
+  }
+
+  disconnect() { this._finish('stop', true); clearInterval(this.stTimer); this.onClose(); }
+
+  async send(o) {
+    switch (o.c) {
+      case 'info': this._info(); break;
+      case 'sim': this.cfg.glu = o.glu ?? 100; this.cfg.redox = !!o.redox; this._info(); break;
+      case 'stop': this._finish('stop'); break;
+      case 'ca': this._startCA(o); break;
+      case 'cv': this._startCV(o); break;
+      case 'ocp': this._startOCP(o); break;
+      default: this._emit({ t: 'err', code: 'BAD_CMD', msg: 'comando desconocido' });
+    }
+  }
+
+  _emit(obj) {
+    // se parte en trozos de 20 bytes, como con un MTU mínimo, para probar el reensamblado
+    const s = JSON.stringify(obj) + '\n';
+    for (let i = 0; i < s.length; i += 20) this.onText(s.slice(i, i + 20));
+  }
+  _info() { this._emit({ t: 'info', fw: 'sim-js', mode: 'sim', name: 'Simulador', mtu: 23 }); }
+  _status() { this._emit({ t: 'st', state: this.timer ? 'run' : 'idle', rng: this.rng ?? 3, bat: 3900, temp: 24.0, mode: 'sim' }); }
+
+  _begin(mode, sps, total, rng) {
+    if (this.timer || this.settleTimer) { this._emit({ t: 'err', code: 'BUSY', msg: 'ya hay una medicion en curso' }); return false; }
+    this.run = (this.run + 1) & 255; this.mode = mode; this.sps = sps; this.total = total; this.idx = 0;
+    this.rng = rng; this.batch = []; this.t0 = 0;
+    this._emit({ t: 'start', mode, sps, rng, run: this.run, n: total });
+    return true;
+  }
+
+  _startCA(o) {
+    const sps = Math.min(Math.max(o.sps ?? 20, 1), 1000), dur = o.dur ?? 60;
+    const rng = (o.rng === 'auto' || o.rng === undefined) ? this._autoRange(this.cfg.glu * 1.6) : o.rng;
+    if (!this._begin('ca', sps, Math.floor(dur * sps), rng)) return;
+    this.E = o.e ?? 0; this.eStep = this.E - 120; this.prevE = this.E;
+    this.tOff = (o.settle ?? 2000) / 1000;
+    this.settleTimer = setTimeout(() => { this.settleTimer = null; this.t0 = 0; this._loop(); }, o.settle ?? 2000);
+  }
+
+  _startOCP(o) {
+    const sps = Math.min(Math.max(o.sps ?? 10, 1), 100), dur = o.dur ?? 10;
+    if (!this._begin('ocp', sps, Math.floor(dur * sps), 1)) return;
+    this.tOff = 0;
+    this._loop();
+  }
+
+  _startCV(o) {
+    const sr = o.sr ?? 50, es = o.es ?? -200, e1 = o.e1 ?? 600, e2 = o.e2 ?? -200, n = o.n ?? 1;
+    const sps = Math.min(Math.max(sr, 20), 330), dE = sr / sps;
+    const wp = [es, e1, e2]; for (let c = 1; c < n; c++) wp.push(e1, e2);
+    let total = 1; for (let k = 0; k + 1 < wp.length; k++) total += Math.ceil(Math.abs(wp[k + 1] - wp[k]) / dE - 1e-4);
+    const rng = o.rng === 'auto' ? 1 : (o.rng ?? 1);
+    if (!this._begin('cv', sps, total, rng)) return;
+    this.wp = wp; this.seg = 0; this.eCur = es; this.dE = dE; this.first = true; this.E = es; this.prevE = es;
+    this.eStep = es - 120;
+    this.tOff = 1.0;
+    this.settleTimer = setTimeout(() => { this.settleTimer = null; this._loop(); }, 1000);
+  }
+
+  _autoRange(i_nA) {
+    for (let r = 3; r >= 0; r--) if (Math.abs(i_nA) * 1e-9 * RF[r] < 0.9 * FS_V) return r;
+    return 0;
+  }
+
+  _cvNext() {
+    if (this.first) { this.first = false; return this.eCur; }
+    if (this.seg >= this.wp.length - 1) return null;
+    const tgt = this.wp[this.seg + 1], d = tgt - this.eCur;
+    if (Math.abs(d) <= this.dE) { this.eCur = tgt; this.seg++; } else this.eCur += d > 0 ? this.dE : -this.dE;
+    return this.eCur;
+  }
+
+  _loop() {
+    const tickMs = 20;
+    this.vstart = performance.now();
+    this.timer = setInterval(() => {
+      const due = Math.floor(((performance.now() - this.vstart) / 1000) * this.sps) - this.idx;
+      for (let k = 0; k < due; k++) {
+        if (this.mode === 'cv') {
+          const E = this._cvNext();
+          if (E === null) { this._finish('done'); return; }
+          this.E = E;
+        }
+        this._push(this._sample());
+        if (this.mode !== 'cv' && this.idx >= this.total) { this._finish('done'); return; }
+      }
+      if (this.batch.length) this._flush();
+    }, tickMs);
+  }
+
+  gauss() { let s = 0; for (let k = 0; k < 4; k++) s += Math.random(); return (s - 2) / 0.577; }
+
+  _sample() {
+    const dt = 1 / this.sps, rf = RF[this.rng], t = this.idx * dt + (this.tOff || 0);
+    let i_nA = 0, e_mV;
+    if (this.mode === 'ocp') {
+      e_mV = 120 + 0.5 * Math.sin(performance.now() / 9000) + 0.1 * this.gauss();
+    } else {
+      const dE = this.E - this.prevE; this.prevE = this.E;
+      const dir = dE > 1e-4 ? 1 : dE < -1e-4 ? -1 : 0;
+      const act = 1 / (1 + Math.exp((this.E - 100) / 30));
+      i_nA += 1.6 * this.cfg.glu * act;
+      i_nA += (-this.eStep / 1.5) * 1000 * Math.exp(-t / 0.03);
+      i_nA += -0.02 * t + (this.eStep < 0 ? 25 : -25) * Math.exp(-t / 15);
+      if (dir !== 0) {
+        const sr = Math.abs(dE / dt) / 1000;
+        i_nA += -dir * 20 * sr * 1000;
+        if (this.cfg.redox) {
+          const ip = 58.6 * Math.sqrt(sr / 0.05), w = 28;
+          const g = (x) => { const e = Math.exp(x); return 4 * e / ((1 + e) * (1 + e)); };
+          i_nA += dir > 0 ? -ip * 1000 * g((this.E - 250) / w) : ip * 1000 * g((this.E - 190) / w);
+        }
+      }
+      e_mV = this.E + 0.03 * this.gauss();
+    }
+    i_nA += Math.hypot(3.7e-6 / rf * 1e9, 0.3) * this.gauss();
+    let i_pA = i_nA * 1000;
+    const max = FS_V / rf * 1e12;
+    i_pA = Math.max(-max, Math.min(max, i_pA));
+    return { i: Math.round(i_pA), e: Math.round(e_mV * 10) };
+  }
+
+  _push(s) { this.batch.push(s); this.idx++; if (this.batch.length >= 20) this._flush(); }
+
+  _flush() {
+    if (!this.batch.length) return;
+    const n = this.batch.length, buf = new ArrayBuffer(7 + 6 * n), dv = new DataView(buf);
+    dv.setUint8(0, 0xD1); dv.setUint8(1, this.run); dv.setUint32(2, this.idx - n, true); dv.setUint8(6, n);
+    this.batch.forEach((s, k) => { dv.setInt32(7 + 6 * k, s.i, true); dv.setInt16(11 + 6 * k, s.e, true); });
+    this.batch = [];
+    this.onData(dv);
+  }
+
+  _finish(reason, silent) {
+    const was = this.timer || this.settleTimer;
+    clearInterval(this.timer); clearTimeout(this.settleTimer); this.timer = null; this.settleTimer = null;
+    if (!was) return;
+    this._flush();
+    if (!silent) this._emit({ t: 'end', reason, n: this.idx, run: this.run, drop: 0 });
+  }
+}
+
+// ------------------------------------------------------------------ gráfica
+class Chart {
+  constructor(canvas) {
+    this.cv = canvas; this.ctx = canvas.getContext('2d');
+    this.x = []; this.y = []; this.xl = ''; this.yl = ''; this.pending = false;
+    window.addEventListener('resize', () => this.request());
+  }
+  set(x, y, xl, yl) { this.x = x; this.y = y; this.xl = xl; this.yl = yl; this.request(); }
+  request() { if (!this.pending) { this.pending = true; requestAnimationFrame(() => { this.pending = false; this.draw(); }); } }
+
+  static ticks(min, max, n) {
+    if (!(max > min)) { max = min + 1; }
+    const raw = (max - min) / n, mag = Math.pow(10, Math.floor(Math.log10(raw)));
+    const f = raw / mag, step = (f < 1.5 ? 1 : f < 3 ? 2 : f < 7 ? 5 : 10) * mag;
+    const out = []; for (let v = Math.ceil(min / step) * step; v <= max + step * 1e-6; v += step) out.push(+v.toPrecision(12));
+    return { out, step };
+  }
+
+  draw() {
+    const cv = this.cv, ctx = this.ctx, dpr = window.devicePixelRatio || 1;
+    const w = cv.clientWidth, h = cv.clientHeight;
+    if (cv.width !== w * dpr || cv.height !== h * dpr) { cv.width = w * dpr; cv.height = h * dpr; }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+    const css = getComputedStyle(document.documentElement);
+    const ink = css.getPropertyValue('--muted').trim(), grid = css.getPropertyValue('--grid').trim(), plot = css.getPropertyValue('--plot').trim();
+    const L = 62, R = 12, T = 10, B = 38;
+    ctx.font = '12px system-ui, sans-serif';
+    if (this.x.length < 2) { ctx.fillStyle = ink; ctx.fillText('Sin datos', L + 10, T + 24); return; }
+    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+    for (let k = 0; k < this.x.length; k++) {
+      const a = this.x[k], b = this.y[k];
+      if (a < x0) x0 = a; if (a > x1) x1 = a; if (b < y0) y0 = b; if (b > y1) y1 = b;
+    }
+    if (y1 - y0 < 1e-9) { y0 -= 1; y1 += 1; }
+    const pad = (y1 - y0) * 0.06; y0 -= pad; y1 += pad;
+    const sx = (v) => L + ((v - x0) / (x1 - x0 || 1)) * (w - L - R);
+    const sy = (v) => T + (1 - (v - y0) / (y1 - y0)) * (h - T - B);
+    ctx.strokeStyle = grid; ctx.fillStyle = ink; ctx.lineWidth = 1;
+    const tx = Chart.ticks(x0, x1, 6), ty = Chart.ticks(y0, y1, 5);
+    const dec = (st) => Math.max(0, -Math.floor(Math.log10(st)) + (st < 1 ? 0 : 0));
+    ctx.textAlign = 'center';
+    for (const v of tx.out) { const X = sx(v); ctx.beginPath(); ctx.moveTo(X, T); ctx.lineTo(X, h - B); ctx.stroke(); ctx.fillText(v.toFixed(dec(tx.step)), X, h - B + 15); }
+    ctx.textAlign = 'right';
+    for (const v of ty.out) { const Y = sy(v); ctx.beginPath(); ctx.moveTo(L, Y); ctx.lineTo(w - R, Y); ctx.stroke(); ctx.fillText(v.toFixed(dec(ty.step)), L - 6, Y + 4); }
+    ctx.textAlign = 'center'; ctx.fillText(this.xl, L + (w - L - R) / 2, h - 6);
+    ctx.save(); ctx.translate(13, T + (h - T - B) / 2); ctx.rotate(-Math.PI / 2); ctx.fillText(this.yl, 0, 0); ctx.restore();
+    ctx.strokeStyle = plot; ctx.lineWidth = 1.6; ctx.beginPath();
+    for (let k = 0; k < this.x.length; k++) { const X = sx(this.x[k]), Y = sy(this.y[k]); if (k) ctx.lineTo(X, Y); else ctx.moveTo(X, Y); }
+    ctx.stroke();
+  }
+}
+
+// ------------------------------------------------------------------ estado de la app
+const S = {
+  link: null, mode: 'ca', running: false,
+  run: { mode: 'ca', sps: 20, rng: 3, n: 0, t: [], e: [], i: [], meta: null },
+  textBuf: '',
+};
+const chart = new Chart($('#plot'));
+
+function unitFor(maxAbs_nA) {
+  if (maxAbs_nA >= 1e6) return { f: 1e-6, u: 'mA' };
+  if (maxAbs_nA >= 1e3) return { f: 1e-3, u: 'µA' };
+  return { f: 1, u: 'nA' };
+}
+const fmtI = (nA) => { const { f, u } = unitFor(Math.abs(nA)); return `${(nA * f).toFixed(Math.abs(nA * f) < 10 ? 3 : 2)} ${u}`; };
+
+function setChip(text, cls) { const c = $('#chip'); c.textContent = text; c.className = 'chip' + (cls ? ' ' + cls : ''); }
+
+function updateButtons() {
+  const on = !!S.link;
+  $('#btnStart').disabled = !on || S.running;
+  $('#btnStop').disabled = !on || !S.running;
+  $('#btnCsv').disabled = S.run.i.length === 0;
+  $('#btnBle').hidden = on; $('#btnSim').hidden = on; $('#btnDisc').hidden = !on;
+  $('#simBox').hidden = !(on && S.link.kind === 'sim');
+  $$('.tab').forEach((t) => (t.disabled = S.running));
+}
+
+// ------------------------------------------------------------------ mensajes del dispositivo
+function onText(chunk) {
+  S.textBuf += chunk;
+  let k;
+  while ((k = S.textBuf.indexOf('\n')) >= 0) {
+    const line = S.textBuf.slice(0, k).trim(); S.textBuf = S.textBuf.slice(k + 1);
+    if (!line) continue;
+    try { onMessage(JSON.parse(line)); } catch (e) { log('mensaje ilegible: ' + line); }
+  }
+}
+
+function onMessage(m) {
+  switch (m.t) {
+    case 'info':
+      $('#dMode').textContent = m.mode === 'sim' ? 'Simulado' : 'Real';
+      $('#dFw').textContent = m.fw;
+      log(`dispositivo ${m.name}, fw ${m.fw}, analógico ${m.mode}`);
+      break;
+    case 'st':
+      $('#dBat').textContent = (m.bat / 1000).toFixed(2) + ' V';
+      $('#dTemp').textContent = Number(m.temp).toFixed(1) + ' °C';
+      $('#dRng').textContent = RANGE_NAME[m.rng] ?? '–';
+      break;
+    case 'start':
+      S.run = { mode: m.mode, sps: m.sps, rng: m.rng, n: m.n, t: [], e: [], i: [], meta: { ...m, params: S.pending, date: new Date().toISOString() } };
+      S.running = true; $('#dRng').textContent = RANGE_NAME[m.rng] ?? '–';
+      setChip('Midiendo…', 'run'); log(`inicio ${m.mode.toUpperCase()}: ${m.n} muestras a ${m.sps} /s, rango ${RANGE_NAME[m.rng]}`);
+      refreshPlot(); refreshStats(); updateButtons();
+      break;
+    case 'end':
+      S.running = false; setChip(S.link ? 'Conectado' : 'Sin conexión', S.link ? 'ok' : '');
+      log(`fin (${m.reason}): ${m.n} muestras` + (m.drop ? `, ${m.drop} perdidas` : ''));
+      refreshPlot(); refreshStats(); updateButtons();
+      break;
+    case 'err':
+      log(`ERROR ${m.code}: ${m.msg}`);
+      break;
+    default: log('mensaje: ' + JSON.stringify(m));
+  }
+}
+
+function onData(dv) {
+  if (dv.byteLength < 7 || dv.getUint8(0) !== 0xD1) return;
+  const idx0 = dv.getUint32(2, true), n = dv.getUint8(6), r = S.run;
+  for (let k = 0; k < n && 7 + 6 * (k + 1) <= dv.byteLength; k++) {
+    const i_pA = dv.getInt32(7 + 6 * k, true), e_01 = dv.getInt16(11 + 6 * k, true);
+    r.t.push((idx0 + k) / r.sps); r.e.push(e_01 / 10); r.i.push(i_pA / 1000);   // nA
+  }
+  refreshPlot(); refreshStats();
+}
+
+// ------------------------------------------------------------------ gráfica y resultados
+function refreshPlot() {
+  const r = S.run;
+  let xs, ys, xl, yl, title;
+  const maxI = r.i.reduce((a, b) => Math.max(a, Math.abs(b)), 0);
+  const { f, u } = unitFor(maxI);
+  if (r.mode === 'cv') { xs = r.e; ys = r.i.map((v) => v * f); xl = 'E (mV)'; yl = `I (${u})`; title = 'Voltamperograma cíclico'; }
+  else if (r.mode === 'ocp') { xs = r.t; ys = r.e; xl = 't (s)'; yl = 'E (mV)'; title = 'Potencial de reposo'; }
+  else { xs = r.t; ys = r.i.map((v) => v * f); xl = 't (s)'; yl = `I (${u})`; title = 'Cronoamperometría'; }
+  $('#plotTitle').textContent = title;
+  chart.set(xs, ys, xl, yl);
+}
+
+function refreshStats() {
+  const r = S.run, n = r.i.length;
+  $('#rN').textContent = n;
+  $('#btnCsv').disabled = n === 0;
+  if (!n) { ['rLast', 'rMean', 'rStd', 'rConc'].forEach((id) => ($('#' + id).textContent = '–')); return; }
+  if (r.mode === 'ocp') {
+    $('#rLastL').textContent = 'Último potencial';
+    $('#rLast').textContent = r.e[n - 1].toFixed(1) + ' mV';
+    const tail = r.e.slice(-Math.max(1, Math.round(10 * r.sps)));
+    const m = tail.reduce((a, b) => a + b, 0) / tail.length;
+    $('#rMean').textContent = m.toFixed(1) + ' mV';
+    $('#rStd').textContent = Math.sqrt(tail.reduce((a, b) => a + (b - m) ** 2, 0) / tail.length).toFixed(2) + ' mV';
+    $('#rConc').textContent = '–';
+    return;
+  }
+  $('#rLastL').textContent = 'Última corriente';
+  $('#rLast').textContent = fmtI(r.i[n - 1]);
+  const tail = r.i.slice(-Math.max(1, Math.round(10 * r.sps)));
+  const m = tail.reduce((a, b) => a + b, 0) / tail.length;
+  const sd = Math.sqrt(tail.reduce((a, b) => a + (b - m) ** 2, 0) / tail.length);
+  $('#rMean').textContent = fmtI(m);
+  $('#rStd').textContent = fmtI(sd);
+  if (r.mode === 'ca') {
+    const slope = parseFloat($('#calSlope').value), intercept = parseFloat($('#calInt').value) || 0;
+    $('#rConc').textContent = slope > 0 ? Math.max(0, (m - intercept) / slope).toFixed(1) + ' µM' : '–';
+  } else $('#rConc').textContent = '–';
+}
+
+// ------------------------------------------------------------------ acciones
+function showMode(mode) {
+  S.mode = mode;
+  $$('.tab').forEach((t) => t.setAttribute('aria-selected', String(t.dataset.mode === mode)));
+  $$('[data-for]').forEach((el) => (el.hidden = el.dataset.for !== mode));
+}
+
+const num = (id) => parseFloat($('#' + id).value);
+const rngVal = (id) => { const v = $('#' + id).value; return v === 'auto' ? 'auto' : parseInt(v, 10); };
+
+function buildCommand() {
+  if (S.mode === 'ca') return { c: 'ca', e: num('caE'), dur: num('caDur'), sps: num('caSps'), rng: rngVal('caRng'), settle: num('caSettle') };
+  if (S.mode === 'cv') return { c: 'cv', es: num('cvEs'), e1: num('cvE1'), e2: num('cvE2'), sr: num('cvSr'), n: num('cvN'), rng: rngVal('cvRng') };
+  return { c: 'ocp', dur: num('ocpDur'), sps: num('ocpSps') };
+}
+
+async function send(obj) {
+  log('→ ' + JSON.stringify(obj));
+  try { await S.link.send(obj); } catch (e) { log('error al enviar: ' + e.message); }
+}
+
+async function connect(link) {
+  try {
+    link.onText = onText; link.onData = onData;
+    link.onClose = () => { S.link = null; S.running = false; setChip('Sin conexión'); log('desconectado'); updateButtons(); };
+    setChip('Conectando…');
+    await link.connect();
+    S.link = link; S.textBuf = '';
+    setChip('Conectado', 'ok'); log(link.kind === 'sim' ? 'simulador conectado' : 'BLE conectado');
+    updateButtons();
+  } catch (e) {
+    setChip('Sin conexión'); log('no se pudo conectar: ' + e.message); S.link = null; updateButtons();
+  }
+}
+
+function toCsv() {
+  const r = S.run, lines = [];
+  lines.push('# Potenciostato - ' + r.mode.toUpperCase() + ' - ' + (r.meta?.date || ''));
+  lines.push('# sps=' + r.sps + ' rango=' + RANGE_NAME[r.rng] + ' params=' + JSON.stringify(S.pending || {}));
+  lines.push('# corriente positiva = catodica');
+  lines.push('idx,t_s,E_mV,I_nA');
+  r.i.forEach((v, k) => lines.push([k, r.t[k].toFixed(4), r.e[k].toFixed(1), v.toFixed(3)].join(',')));
+  return lines.join('\n') + '\n';
+}
+
+function wire() {
+  $('#btnBle').onclick = () => connect(new BleLink());
+  $('#btnSim').onclick = () => connect(new SimLink());
+  $('#btnDisc').onclick = () => { if (S.link) S.link.disconnect(); };
+  $$('.tab').forEach((t) => (t.onclick = () => showMode(t.dataset.mode)));
+  $('#btnStart').onclick = () => { const c = buildCommand(); S.pending = c; send(c); };
+  $('#btnStop').onclick = () => send({ c: 'stop' });
+  $('#btnSimCfg').onclick = () => send({ c: 'sim', glu: num('simGlu'), redox: $('#simRedox').value === '1' ? 1 : 0 });
+  $('#btnClear').onclick = () => { S.run = { mode: S.run.mode, sps: S.run.sps, rng: S.run.rng, n: 0, t: [], e: [], i: [], meta: null }; refreshPlot(); refreshStats(); updateButtons(); };
+  $('#btnCsv').onclick = () => {
+    const url = URL.createObjectURL(new Blob([toCsv()], { type: 'text/csv' }));
+    const a = document.createElement('a'); a.href = url; a.download = `potenciostato_${S.run.mode}_${Date.now()}.csv`; a.click(); URL.revokeObjectURL(url);
+  };
+  ['calSlope', 'calInt'].forEach((id) => {
+    const el = $('#' + id), saved = localStorage.getItem('pot_' + id);
+    if (saved !== null) el.value = saved;
+    el.addEventListener('input', () => { localStorage.setItem('pot_' + id, el.value); refreshStats(); });
+  });
+  if (!navigator.bluetooth) { $('#btnBle').disabled = true; log('Este navegador no soporta Web Bluetooth: usa Chrome en Android o en el PC. El simulador sí funciona.'); }
+  showMode('ca'); refreshPlot(); refreshStats(); updateButtons();
+}
+
+wire();
