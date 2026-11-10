@@ -2,145 +2,214 @@
 <html lang="es">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0d0f12">
 <title>Potenciostato</title>
 <style>
 :root {
-  --bg:#f4f6f8; --card:#ffffff; --ink:#18212b; --muted:#5d6b7a; --line:#d9e0e7;
-  --accent:#0b6bcb; --accent-ink:#ffffff; --ok:#12805c; --warn:#b26a00; --bad:#c62828;
-  --plot:#0b6bcb; --grid:#e3e8ee;
-}
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --bg:#10161d; --card:#18212b; --ink:#e8eef4; --muted:#93a2b3; --line:#2b3948;
-    --accent:#5aa9ff; --accent-ink:#06121f; --ok:#4fd1a1; --warn:#ffb74d; --bad:#ff6b6b;
-    --plot:#5aa9ff; --grid:#26323f;
-  }
+  color-scheme:dark;
+  --bg:#0d0f12; --card:#151a20; --ink:#f2f4f6; --muted:#8a929c; --line:#232932; --seg:#1b2027;
+  --accent:#3ddc97; --accent-ink:#06241a; --ok:#3ddc97; --ok-bg:#12332a; --run:#ffb74d; --run-bg:#3a2a0e;
+  --bad:#ff6b6b; --plot:#3ddc97; --grid:#1f252d; --logbg:#0f1318;
 }
 * { box-sizing:border-box; }
-body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
-header { display:flex; flex-wrap:wrap; gap:10px 16px; align-items:center; padding:14px 16px; background:var(--card); border-bottom:1px solid var(--line); position:sticky; top:0; z-index:5; }
-h1 { font-size:1.15rem; margin:0; font-weight:650; flex:1 1 auto; }
-h2 { font-size:.8rem; letter-spacing:.06em; text-transform:uppercase; color:var(--muted); margin:0 0 10px; font-weight:650; }
-main { max-width:900px; margin:0 auto; padding:14px 16px 40px; display:grid; gap:14px; }
-.card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px 16px; }
-button { font:inherit; border:1px solid var(--accent); background:var(--accent); color:var(--accent-ink); padding:8px 14px; border-radius:8px; cursor:pointer; }
-button.ghost { background:transparent; color:var(--accent); }
-button.danger { border-color:var(--bad); background:var(--bad); color:#fff; }
-button:disabled { opacity:.45; cursor:not-allowed; }
-.chip { font-size:.8rem; padding:3px 10px; border-radius:999px; border:1px solid var(--line); color:var(--muted); }
-.chip.ok { color:var(--ok); border-color:var(--ok); }
-.chip.run { color:var(--warn); border-color:var(--warn); }
-.row { display:flex; flex-wrap:wrap; gap:10px 14px; align-items:end; }
-label { display:flex; flex-direction:column; gap:3px; font-size:.82rem; color:var(--muted); min-width:110px; flex:1 1 110px; }
-input, select { font:inherit; padding:7px 9px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--ink); width:100%; }
-.tabs { display:flex; gap:6px; margin-bottom:12px; flex-wrap:wrap; }
-.tab { background:transparent; color:var(--ink); border:1px solid var(--line); }
-.tab[aria-selected="true"] { background:var(--accent); color:var(--accent-ink); border-color:var(--accent); }
-.stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:10px; }
-.stat b { display:block; font-size:1.25rem; font-variant-numeric:tabular-nums; }
-.stat span { font-size:.78rem; color:var(--muted); }
-canvas { width:100%; height:280px; display:block; }
-#log { font:12px/1.5 ui-monospace, Consolas, monospace; max-height:180px; overflow:auto; color:var(--muted); white-space:pre-wrap; }
-.hint { font-size:.8rem; color:var(--muted); margin:8px 0 0; }
+html, body { margin:0; background:var(--bg); color:var(--ink); }
+body { font:15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; -webkit-tap-highlight-color:transparent; }
+.app { max-width:560px; margin:0 auto; min-height:100vh; display:flex; flex-direction:column; }
+.hd { display:flex; align-items:center; justify-content:space-between; padding:calc(14px + env(safe-area-inset-top)) 16px 8px; position:sticky; top:0; background:var(--bg); z-index:5; }
+.hd h1 { margin:0; font-size:1.2rem; font-weight:600; }
+.chip { font-size:.78rem; padding:3px 10px; border-radius:999px; background:var(--seg); color:var(--muted); white-space:nowrap; }
+.chip.ok { background:var(--ok-bg); color:var(--ok); }
+.chip.run { background:var(--run-bg); color:var(--run); }
+main { flex:1; padding:4px 16px 24px; }
+.page { display:flex; flex-direction:column; gap:12px; }
+.card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:12px 14px; }
+.card h2, .sec { font-size:.78rem; letter-spacing:.05em; text-transform:uppercase; color:var(--muted); margin:0 0 8px; font-weight:600; }
+.sec { margin:6px 2px 0; }
+p { margin:0; }
+.hint { font-size:.8rem; color:var(--muted); margin-top:6px; }
+.row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+.btn { font:inherit; border:1px solid var(--line); background:var(--card); color:var(--ink); border-radius:10px; padding:9px 14px; cursor:pointer; }
+.btn.pri { background:var(--accent); border-color:var(--accent); color:var(--accent-ink); }
+.btn.sm { padding:6px 11px; font-size:.85rem; }
+.btn:disabled { opacity:.5; cursor:not-allowed; }
+.seg { display:flex; background:var(--seg); border-radius:12px; padding:3px; gap:2px; }
+.seg button { flex:1; border:0; background:transparent; color:var(--muted); font:inherit; font-size:.9rem; border-radius:9px; height:36px; cursor:pointer; padding:0 4px; }
+.seg button[aria-selected="true"] { background:var(--card); color:var(--ink); font-weight:600; box-shadow:0 0 0 1px var(--line); }
+.seg button:disabled { opacity:.55; cursor:not-allowed; }
+.grid { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+.fld { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:6px 10px; display:flex; flex-direction:column; }
+.fld span { font-size:.74rem; color:var(--muted); }
+.fld input { font:inherit; font-size:1rem; border:0; background:transparent; color:var(--ink); padding:2px 0 0; width:100%; font-variant-numeric:tabular-nums; outline:none; }
+.fld:focus-within { border-color:var(--accent); }
+.rng { display:flex; gap:6px; }
+.rng button { flex:1; font:inherit; font-size:.88rem; border:1px solid var(--line); background:var(--card); color:var(--muted); border-radius:10px; padding:8px 0; cursor:pointer; }
+.rng button[aria-pressed="true"] { background:var(--ok-bg); border-color:var(--accent); color:var(--accent); font-weight:600; }
+.rng button:disabled { opacity:.55; cursor:not-allowed; }
+.plotbox { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:8px 4px 0; }
+.plotcap { font-size:.78rem; color:var(--muted); padding:0 10px 2px; display:flex; justify-content:space-between; }
+canvas { width:100%; height:min(52vh, 380px); min-height:260px; display:block; }
+.par { background:var(--card); border:1px solid var(--line); border-radius:12px; }
+.par summary { list-style:none; cursor:pointer; padding:11px 14px; font-size:.9rem; color:var(--ink); display:flex; justify-content:space-between; align-items:center; gap:10px; }
+.par summary::-webkit-details-marker { display:none; }
+.par summary::after { content:"Editar"; font-size:.78rem; color:var(--accent); flex:none; }
+.par[open] summary::after { content:"Cerrar"; }
+.par .parbody { padding:0 12px 12px; display:flex; flex-direction:column; gap:8px; }
+.go { font:inherit; font-size:1.02rem; font-weight:600; height:48px; border-radius:14px; border:0; background:var(--accent); color:var(--accent-ink); cursor:pointer; width:100%; }
+.go.stop { background:transparent; border:1px solid var(--bad); color:var(--bad); }
+.go:disabled { opacity:.5; cursor:not-allowed; }
+.res { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; }
+.res div { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:8px 10px; min-width:0; }
+.res small { display:block; font-size:.74rem; color:var(--muted); }
+.res b { display:block; font-size:1.05rem; font-weight:600; font-variant-numeric:tabular-nums; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.res em { display:block; font-style:normal; font-size:.72rem; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.stats { display:grid; grid-template-columns:repeat(2,1fr); gap:10px 14px; }
+.stats b { display:block; font-size:1.05rem; font-weight:600; }
+.stats span { font-size:.78rem; color:var(--muted); }
+.fl { display:flex; gap:6px; }
+.fl button { font:inherit; font-size:.85rem; border:1px solid var(--line); background:var(--card); color:var(--muted); border-radius:999px; padding:5px 12px; cursor:pointer; }
+.fl button[aria-pressed="true"] { background:var(--ok-bg); border-color:var(--accent); color:var(--accent); }
+.it { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:10px 12px; display:flex; justify-content:space-between; align-items:center; gap:10px; }
+.it b { font-weight:600; font-size:.95rem; display:block; }
+.it small { font-size:.78rem; color:var(--muted); display:block; }
+.it .v { font-weight:600; font-variant-numeric:tabular-nums; text-align:right; white-space:nowrap; }
+.it button { font:inherit; border:0; background:transparent; color:var(--accent); cursor:pointer; padding:4px 6px; font-size:.85rem; }
+.empty { color:var(--muted); font-size:.9rem; padding:14px 4px; text-align:center; }
+#log { font:12px/1.55 ui-monospace, Consolas, monospace; color:var(--muted); background:var(--logbg); border-radius:10px; padding:10px 12px; max-height:46vh; min-height:80px; overflow:auto; white-space:pre-wrap; }
+label.cal { display:flex; flex-direction:column; gap:3px; font-size:.82rem; color:var(--muted); flex:1 1 140px; }
+label.cal input, label.cal select { font:inherit; padding:7px 9px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--ink); width:100%; }
+.nav { position:sticky; bottom:0; display:flex; background:var(--card); border-top:1px solid var(--line); padding-bottom:env(safe-area-inset-bottom); z-index:6; }
+.nav button { flex:1; font:inherit; font-size:.76rem; border:0; background:transparent; color:var(--muted); padding:8px 0 7px; cursor:pointer; display:flex; flex-direction:column; align-items:center; gap:2px; }
+.nav button svg { width:22px; height:22px; stroke:currentColor; fill:none; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
+.nav button[aria-current="page"] { color:var(--accent); font-weight:600; }
 [hidden] { display:none !important; }
 </style>
 </head>
 <body>
-<header>
-  <h1>Potenciostato portátil</h1>
-  <span id="chip" class="chip">Sin conexión</span>
-  <div class="row" style="align-items:center">
-    <button id="btnBle">Conectar BLE</button>
-    <button id="btnSim" class="ghost">Simulador</button>
-    <button id="btnDisc" class="ghost" hidden>Desconectar</button>
-  </div>
-</header>
+<div class="app">
+  <header class="hd"><h1 id="pgTitle">Medir</h1><span id="chip" class="chip">Sin conexión</span></header>
 
-<main>
-  <section class="card">
-    <h2>Dispositivo</h2>
-    <div class="stats">
-      <div class="stat"><b id="dMode">–</b><span>Analógico</span></div>
-      <div class="stat"><b id="dFw">–</b><span>Firmware</span></div>
-      <div class="stat"><b id="dBat">–</b><span>Batería</span></div>
-      <div class="stat"><b id="dTemp">–</b><span>Temperatura</span></div>
-      <div class="stat"><b id="dRng">–</b><span>Rango de corriente</span></div>
-    </div>
-    <div id="simBox" hidden style="margin-top:12px">
-      <div class="row">
-        <label>Glucosa simulada (µM)<input id="simGlu" type="number" value="100" min="0" step="10"></label>
-        <label>Par redox (CV)<select id="simRedox"><option value="0">Apagado</option><option value="1">Ferri/ferrocianuro 5 mM</option></select></label>
-        <button id="btnSimCfg" class="ghost">Aplicar</button>
+  <main>
+    <section id="pg-medir" class="page">
+      <div id="connCard" class="card">
+        <h2>Conectar</h2>
+        <p style="font-size:.92rem">Conecta el potenciostato por Bluetooth, o prueba la app con el simulador.</p>
+        <div class="row" style="margin-top:10px">
+          <button id="btnBle" class="btn pri">Conectar BLE</button>
+          <button id="btnSim" class="btn">Simulador</button>
+        </div>
       </div>
-    </div>
-  </section>
 
-  <section class="card">
-    <h2>Medición</h2>
-    <div class="tabs" role="tablist">
-      <button class="tab" role="tab" data-mode="ca" aria-selected="true">Cronoamperometría</button>
-      <button class="tab" role="tab" data-mode="cv" aria-selected="false">Voltametría cíclica</button>
-      <button class="tab" role="tab" data-mode="ocp" aria-selected="false">Potencial de reposo</button>
-    </div>
+      <div class="seg" role="tablist" aria-label="Tipo de medición">
+        <button class="tab" role="tab" data-mode="ca" aria-selected="true">Cronoamperometría</button>
+        <button class="tab" role="tab" data-mode="cv" aria-selected="false">CV</button>
+        <button class="tab" role="tab" data-mode="ocp" aria-selected="false">OCP</button>
+      </div>
 
-    <div class="row" data-for="ca">
-      <label>Potencial E (mV)<input id="caE" type="number" value="0" step="10"></label>
-      <label>Duración (s)<input id="caDur" type="number" value="60" min="1" max="7200"></label>
-      <label>Muestras/s<input id="caSps" type="number" value="20" min="1" max="100"></label>
-      <label>Rango<select id="caRng"><option value="auto">Automático</option><option value="0">1 kΩ (±1,2 mA)</option><option value="1">10 kΩ (±120 µA)</option><option value="2">100 kΩ (±12 µA)</option><option value="3">1 MΩ (±1,2 µA)</option></select></label>
-      <label>Estabilización (ms)<input id="caSettle" type="number" value="2000" min="0" step="500"></label>
-    </div>
+      <details class="par" id="par">
+      <summary><span id="parSum">Parámetros</span></summary>
+      <div class="parbody">
+      <div class="grid" data-for="ca">
+        <label class="fld"><span>Potencial E (mV)</span><input id="caE" type="number" inputmode="decimal" value="0" step="10"></label>
+        <label class="fld"><span>Duración (s)</span><input id="caDur" type="number" inputmode="decimal" value="60" min="1" max="7200"></label>
+        <label class="fld"><span>Muestras/s</span><input id="caSps" type="number" inputmode="decimal" value="20" min="1" max="100"></label>
+        <label class="fld"><span>Estabilización (ms)</span><input id="caSettle" type="number" inputmode="decimal" value="2000" min="0" step="500"></label>
+      </div>
+      <div class="grid" data-for="cv" hidden>
+        <label class="fld"><span>E inicial (mV)</span><input id="cvEs" type="number" inputmode="decimal" value="-200" step="10"></label>
+        <label class="fld"><span>Vértice 1 (mV)</span><input id="cvE1" type="number" inputmode="decimal" value="600" step="10"></label>
+        <label class="fld"><span>Vértice 2 (mV)</span><input id="cvE2" type="number" inputmode="decimal" value="-200" step="10"></label>
+        <label class="fld"><span>Velocidad (mV/s)</span><input id="cvSr" type="number" inputmode="decimal" value="50" min="1" max="1000"></label>
+        <label class="fld"><span>Ciclos</span><input id="cvN" type="number" inputmode="numeric" value="2" min="1" max="20"></label>
+      </div>
+      <div class="grid" data-for="ocp" hidden>
+        <label class="fld"><span>Duración (s)</span><input id="ocpDur" type="number" inputmode="decimal" value="10" min="1" max="3600"></label>
+        <label class="fld"><span>Muestras/s</span><input id="ocpSps" type="number" inputmode="decimal" value="10" min="1" max="100"></label>
+      </div>
 
-    <div class="row" data-for="cv" hidden>
-      <label>E inicial (mV)<input id="cvEs" type="number" value="-200" step="10"></label>
-      <label>Vértice 1 (mV)<input id="cvE1" type="number" value="600" step="10"></label>
-      <label>Vértice 2 (mV)<input id="cvE2" type="number" value="-200" step="10"></label>
-      <label>Velocidad (mV/s)<input id="cvSr" type="number" value="50" min="1" max="1000"></label>
-      <label>Ciclos<input id="cvN" type="number" value="2" min="1" max="20"></label>
-      <label>Rango<select id="cvRng"><option value="0">1 kΩ (±1,2 mA)</option><option value="1" selected>10 kΩ (±120 µA)</option><option value="2">100 kΩ (±12 µA)</option><option value="3">1 MΩ (±1,2 µA)</option></select></label>
-    </div>
+      <div id="rngBox">
+        <div class="rng" id="rng" role="group" aria-label="Rango de corriente"></div>
+        <p class="hint" id="rngHint"></p>
+      </div>
+      </div>
+      </details>
 
-    <div class="row" data-for="ocp" hidden>
-      <label>Duración (s)<input id="ocpDur" type="number" value="10" min="1" max="3600"></label>
-      <label>Muestras/s<input id="ocpSps" type="number" value="10" min="1" max="100"></label>
-    </div>
+      <div class="plotbox">
+        <div class="plotcap"><span id="plotTitle">Cronoamperometría</span><span id="plotN">0 muestras</span></div>
+        <canvas id="plot"></canvas>
+      </div>
 
-    <div class="row" style="margin-top:14px">
-      <button id="btnStart" disabled>Iniciar</button>
-      <button id="btnStop" class="danger" disabled>Detener</button>
-    </div>
-    <p class="hint">Corriente positiva = catódica (reducción). Potenciales respecto al electrodo de referencia.</p>
-  </section>
+      <button id="btnGo" class="go" disabled>Iniciar</button>
 
-  <section class="card">
-    <h2 id="plotTitle">Gráfica</h2>
-    <canvas id="plot"></canvas>
-  </section>
+      <div class="res">
+        <div><small id="rL1">Última</small><b id="rV1">–</b><em id="rS1">&nbsp;</em></div>
+        <div><small id="rL2">Media 10 s</small><b id="rV2">–</b><em id="rS2">&nbsp;</em></div>
+        <div><small id="rL3">Glucosa</small><b id="rV3">–</b><em id="rS3">&nbsp;</em></div>
+      </div>
+      <p class="hint" id="rMeta">Corriente positiva = catódica (reducción). Potenciales respecto al electrodo de referencia.</p>
+      <div class="row">
+        <button id="btnCsv" class="btn sm" disabled>Exportar CSV</button>
+        <button id="btnClear" class="btn sm">Borrar gráfica</button>
+      </div>
+    </section>
 
-  <section class="card">
-    <h2>Resultado</h2>
-    <div class="stats">
-      <div class="stat"><b id="rLast">–</b><span id="rLastL">Última corriente</span></div>
-      <div class="stat"><b id="rMean">–</b><span>Media últimos 10 s</span></div>
-      <div class="stat"><b id="rStd">–</b><span>Desv. estándar</span></div>
-      <div class="stat"><b id="rConc">–</b><span>Glucosa estimada</span></div>
-      <div class="stat"><b id="rN">0</b><span>Muestras</span></div>
-    </div>
-    <div class="row" style="margin-top:14px">
-      <label>Sensibilidad (nA/µM)<input id="calSlope" type="number" value="1.6" step="0.1" min="0.001"></label>
-      <label>Corriente en 0 µM (nA)<input id="calInt" type="number" value="0" step="0.5"></label>
-      <button id="btnCsv" class="ghost" disabled>Exportar CSV</button>
-      <button id="btnClear" class="ghost">Borrar</button>
-    </div>
-    <p class="hint">La concentración usa la sensibilidad y la corriente de fondo que escribas aquí (cronoamperometría); no es una calibración automática. Rango esperado del sensor: ~1,4–1,9 nA/µM.</p>
-  </section>
+    <section id="pg-reg" class="page" hidden>
+      <div class="row" style="justify-content:space-between">
+        <div class="fl" id="filt" role="group" aria-label="Filtro">
+          <button data-f="all" aria-pressed="true">Todo</button>
+          <button data-f="med" aria-pressed="false">Mediciones</button>
+          <button data-f="dev" aria-pressed="false">Dispositivo</button>
+        </div>
+        <button id="btnCsv2" class="btn sm" disabled>Exportar CSV</button>
+      </div>
+      <div id="secMed">
+        <p class="sec">Mediciones</p>
+        <div id="hist" style="display:flex;flex-direction:column;gap:8px;margin-top:6px"></div>
+      </div>
+      <div id="secDev">
+        <p class="sec">Registro del equipo</p>
+        <div id="log" style="margin-top:6px"></div>
+      </div>
+    </section>
 
-  <section class="card">
-    <h2>Registro</h2>
-    <div id="log"></div>
-  </section>
-</main>
+    <section id="pg-aj" class="page" hidden>
+      <div class="card">
+        <h2>Dispositivo</h2>
+        <div class="stats">
+          <div><b id="dMode">–</b><span>Analógico</span></div>
+          <div><b id="dFw">–</b><span>Firmware</span></div>
+          <div><b id="dBat">–</b><span>Batería</span></div>
+          <div><b id="dTemp">–</b><span>Temperatura</span></div>
+          <div><b id="dRng">–</b><span>Rango en uso</span></div>
+        </div>
+        <div class="row" style="margin-top:12px"><button id="btnDisc" class="btn sm" hidden>Desconectar</button></div>
+      </div>
+      <div class="card" id="simBox">
+        <h2>Simulador</h2>
+        <div class="row">
+          <label class="cal">Glucosa simulada (µM)<input id="simGlu" type="number" value="100" min="0" step="10"></label>
+          <label class="cal">Par redox (CV)<select id="simRedox"><option value="0">Apagado</option><option value="1">Ferri/ferrocianuro 5 mM</option></select></label>
+        </div>
+        <div class="row" style="margin-top:10px"><button id="btnSimCfg" class="btn sm" disabled>Aplicar</button></div>
+        <p class="hint" id="simHint">Disponible al conectar el simulador.</p>
+      </div>
+      <div class="card">
+        <h2>Calibración (cronoamperometría)</h2>
+        <div class="row">
+          <label class="cal">Sensibilidad (nA/µM)<input id="calSlope" type="number" value="1.6" step="0.1" min="0.001"></label>
+          <label class="cal">Corriente en 0 µM (nA)<input id="calInt" type="number" value="0" step="0.5"></label>
+        </div>
+        <p class="hint">La glucosa estimada usa la sensibilidad y la corriente de fondo que escribas aquí; no es una calibración automática. Rango esperado del sensor: ~1,4–1,9 nA/µM.</p>
+      </div>
+    </section>
+  </main>
+
+  <nav class="nav" aria-label="Secciones">
+    <button data-page="medir" aria-current="page"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>Medir</button>
+    <button data-page="reg"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01"/></svg>Registro</button>
+    <button data-page="aj"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>Ajustes</button>
+  </nav>
+</div>
 <script src="app.js"></script>
 </body>
 </html>

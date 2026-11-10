@@ -8,14 +8,22 @@ const UUID = {
   data:    '4c5d0003-8a3e-4f6b-9a2d-2f6e0c1b7a10',
   status:  '4c5d0004-8a3e-4f6b-9a2d-2f6e0c1b7a10',
 };
-const RF = [1e3, 1e4, 1e5, 1e6];
-const RANGE_NAME = ['1 kΩ', '10 kΩ', '100 kΩ', '1 MΩ'];
-const FS_V = 1.2;
+// Rangos de corriente = resistencia de realimentación del TIA (índice 0-3, igual que el firmware).
+// Placa Colombia: 74HC4052 con Rf = 10 k / 100 k / 1 M / 10 M, escala completa ±1,4 V.
+const RANGES = [
+  { rf: 1e4, name: '10 kΩ',  short: '10k',  fs: '±140 µA' },
+  { rf: 1e5, name: '100 kΩ', short: '100k', fs: '±14 µA' },
+  { rf: 1e6, name: '1 MΩ',   short: '1M',   fs: '±1,4 µA' },
+  { rf: 1e7, name: '10 MΩ',  short: '10M',  fs: '±140 nA' },
+];
+const RF = RANGES.map((r) => r.rf);
+const RANGE_NAME = RANGES.map((r) => r.name);
+const FS_V = 1.4;
 
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => Array.from(document.querySelectorAll(s));
 
-// ------------------------------------------------------------------ registro
+// ------------------------------------------------------------------ registro del equipo
 function log(msg) {
   const el = $('#log');
   const t = new Date().toLocaleTimeString();
@@ -267,11 +275,14 @@ class Chart {
 
 // ------------------------------------------------------------------ estado de la app
 const S = {
-  link: null, mode: 'ca', running: false,
+  link: null, mode: 'ca', running: false, rngSel: 'auto', page: 'medir', filter: 'all', bat: null,
   run: { mode: 'ca', sps: 20, rng: 3, n: 0, t: [], e: [], i: [], meta: null },
-  textBuf: '',
+  textBuf: '', pending: null, hist: [],
 };
 const chart = new Chart($('#plot'));
+
+function store(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* sin almacenamiento */ } }
+function load(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
 
 function unitFor(maxAbs_nA) {
   if (maxAbs_nA >= 1e6) return { f: 1e-6, u: 'mA' };
@@ -279,17 +290,28 @@ function unitFor(maxAbs_nA) {
   return { f: 1, u: 'nA' };
 }
 const fmtI = (nA) => { const { f, u } = unitFor(Math.abs(nA)); return `${(nA * f).toFixed(Math.abs(nA * f) < 10 ? 3 : 2)} ${u}`; };
+const fmtE = (mV) => `${mV < 0 ? '−' : '+'}${Math.abs(mV).toFixed(1)} mV`;
+const batPct = (mV) => Math.round(Math.min(100, Math.max(0, (mV - 3300) / 9)));
+const hora = (d) => new Date(d).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
-function setChip(text, cls) { const c = $('#chip'); c.textContent = text; c.className = 'chip' + (cls ? ' ' + cls : ''); }
+function updateChip() {
+  const c = $('#chip');
+  if (!S.link) { c.textContent = 'Sin conexión'; c.className = 'chip'; return; }
+  if (S.running) { c.textContent = 'Midiendo…'; c.className = 'chip run'; return; }
+  c.textContent = 'Conectado' + (S.bat != null ? ` · ${batPct(S.bat)} %` : ''); c.className = 'chip ok';
+}
 
 function updateButtons() {
-  const on = !!S.link;
-  $('#btnStart').disabled = !on || S.running;
-  $('#btnStop').disabled = !on || !S.running;
-  $('#btnCsv').disabled = S.run.i.length === 0;
-  $('#btnBle').hidden = on; $('#btnSim').hidden = on; $('#btnDisc').hidden = !on;
-  $('#simBox').hidden = !(on && S.link.kind === 'sim');
+  const on = !!S.link, has = S.run.i.length > 0, sim = on && S.link.kind === 'sim';
+  const go = $('#btnGo');
+  go.disabled = !on; go.textContent = S.running ? 'Detener' : 'Iniciar'; go.classList.toggle('stop', S.running);
+  $('#connCard').hidden = on;
+  $('#btnDisc').hidden = !on;
   $$('.tab').forEach((t) => (t.disabled = S.running));
+  $$('#rng button').forEach((b) => (b.disabled = S.running));
+  $('#btnCsv').disabled = !has; $('#btnCsv2').disabled = !has;
+  $('#btnSimCfg').disabled = !sim; $('#simHint').hidden = sim;
+  updateChip();
 }
 
 // ------------------------------------------------------------------ mensajes del dispositivo
@@ -311,19 +333,22 @@ function onMessage(m) {
       log(`dispositivo ${m.name}, fw ${m.fw}, analógico ${m.mode}`);
       break;
     case 'st':
-      $('#dBat').textContent = (m.bat / 1000).toFixed(2) + ' V';
+      S.bat = m.bat;
+      $('#dBat').textContent = (m.bat / 1000).toFixed(2) + ' V (' + batPct(m.bat) + ' %)';
       $('#dTemp').textContent = Number(m.temp).toFixed(1) + ' °C';
       $('#dRng').textContent = RANGE_NAME[m.rng] ?? '–';
+      updateChip();
       break;
     case 'start':
       S.run = { mode: m.mode, sps: m.sps, rng: m.rng, n: m.n, t: [], e: [], i: [], meta: { ...m, params: S.pending, date: new Date().toISOString() } };
       S.running = true; $('#dRng').textContent = RANGE_NAME[m.rng] ?? '–';
-      setChip('Midiendo…', 'run'); log(`inicio ${m.mode.toUpperCase()}: ${m.n} muestras a ${m.sps} /s, rango ${RANGE_NAME[m.rng]}`);
+      log(`inicio ${m.mode.toUpperCase()}: ${m.n} muestras a ${m.sps} /s, rango ${RANGE_NAME[m.rng]}`);
       refreshPlot(); refreshStats(); updateButtons();
       break;
     case 'end':
-      S.running = false; setChip(S.link ? 'Conectado' : 'Sin conexión', S.link ? 'ok' : '');
+      S.running = false;
       log(`fin (${m.reason}): ${m.n} muestras` + (m.drop ? `, ${m.drop} perdidas` : ''));
+      addHistory(m.reason);
       refreshPlot(); refreshStats(); updateButtons();
       break;
     case 'err':
@@ -353,50 +378,170 @@ function refreshPlot() {
   else if (r.mode === 'ocp') { xs = r.t; ys = r.e; xl = 't (s)'; yl = 'E (mV)'; title = 'Potencial de reposo'; }
   else { xs = r.t; ys = r.i.map((v) => v * f); xl = 't (s)'; yl = `I (${u})`; title = 'Cronoamperometría'; }
   $('#plotTitle').textContent = title;
+  $('#plotN').textContent = `${r.i.length} muestras`;
   chart.set(xs, ys, xl, yl);
 }
 
-function refreshStats() {
-  const r = S.run, n = r.i.length;
-  $('#rN').textContent = n;
-  $('#btnCsv').disabled = n === 0;
-  if (!n) { ['rLast', 'rMean', 'rStd', 'rConc'].forEach((id) => ($('#' + id).textContent = '–')); return; }
-  if (r.mode === 'ocp') {
-    $('#rLastL').textContent = 'Último potencial';
-    $('#rLast').textContent = r.e[n - 1].toFixed(1) + ' mV';
-    const tail = r.e.slice(-Math.max(1, Math.round(10 * r.sps)));
-    const m = tail.reduce((a, b) => a + b, 0) / tail.length;
-    $('#rMean').textContent = m.toFixed(1) + ' mV';
-    $('#rStd').textContent = Math.sqrt(tail.reduce((a, b) => a + (b - m) ** 2, 0) / tail.length).toFixed(2) + ' mV';
-    $('#rConc').textContent = '–';
-    return;
-  }
-  $('#rLastL').textContent = 'Última corriente';
-  $('#rLast').textContent = fmtI(r.i[n - 1]);
-  const tail = r.i.slice(-Math.max(1, Math.round(10 * r.sps)));
-  const m = tail.reduce((a, b) => a + b, 0) / tail.length;
-  const sd = Math.sqrt(tail.reduce((a, b) => a + (b - m) ** 2, 0) / tail.length);
-  $('#rMean').textContent = fmtI(m);
-  $('#rStd').textContent = fmtI(sd);
-  if (r.mode === 'ca') {
-    const slope = parseFloat($('#calSlope').value), intercept = parseFloat($('#calInt').value) || 0;
-    $('#rConc').textContent = slope > 0 ? Math.max(0, (m - intercept) / slope).toFixed(1) + ' µM' : '–';
-  } else $('#rConc').textContent = '–';
+function tile(k, label, value, sub) {
+  $('#rL' + k).textContent = label; $('#rV' + k).textContent = value; $('#rS' + k).innerHTML = sub || '&nbsp;';
 }
 
-// ------------------------------------------------------------------ acciones
+function meanSd(arr, sps) {
+  const tail = arr.slice(-Math.max(1, Math.round(10 * sps)));
+  const m = tail.reduce((a, b) => a + b, 0) / tail.length;
+  return { m, sd: Math.sqrt(tail.reduce((a, b) => a + (b - m) ** 2, 0) / tail.length), tail };
+}
+
+function cvPeaks(r) {
+  let kmax = 0, kmin = 0;
+  for (let k = 1; k < r.i.length; k++) { if (r.i[k] > r.i[kmax]) kmax = k; if (r.i[k] < r.i[kmin]) kmin = k; }
+  return { kmax, kmin };   // corriente positiva = catódica
+}
+
+function glucose(meanNA) {
+  const slope = parseFloat($('#calSlope').value), intercept = parseFloat($('#calInt').value) || 0;
+  return slope > 0 ? Math.max(0, (meanNA - intercept) / slope) : null;
+}
+
+function refreshStats() {
+  const r = S.run, n = r.i.length, meta = $('#rMeta');
+  $('#btnCsv').disabled = n === 0; $('#btnCsv2').disabled = n === 0;
+  const labels = { ca: ['Última', 'Media 10 s', 'Glucosa'], cv: ['Pico anódico', 'Pico catódico', 'ΔEp'], ocp: ['Actual', 'Deriva', 'Muestras'] }[r.mode];
+  if (!n) {
+    tile(1, labels[0], '–'); tile(2, labels[1], '–'); tile(3, labels[2], '–');
+    meta.textContent = 'Corriente positiva = catódica (reducción). Potenciales respecto al electrodo de referencia.';
+    return;
+  }
+  if (r.mode === 'ocp') {
+    const { sd, tail } = meanSd(r.e, r.sps);
+    const nt = tail.length, dt = (nt - 1) / r.sps;
+    const drift = dt > 0 ? (tail[nt - 1] - tail[0]) / dt : 0;
+    tile(1, labels[0], fmtE(r.e[n - 1])); tile(2, labels[1], drift.toFixed(2) + ' mV/s', 'últimos 10 s'); tile(3, labels[2], String(n));
+    meta.textContent = `σ ${sd.toFixed(2)} mV en los últimos 10 s`;
+    return;
+  }
+  const { m, sd } = meanSd(r.i, r.sps);
+  if (r.mode === 'cv') {
+    const { kmax, kmin } = cvPeaks(r);
+    tile(1, labels[0], fmtI(r.i[kmin]), `en ${r.e[kmin].toFixed(0)} mV`);
+    tile(2, labels[1], fmtI(r.i[kmax]), `en ${r.e[kmax].toFixed(0)} mV`);
+    tile(3, labels[2], Math.abs(r.e[kmin] - r.e[kmax]).toFixed(0) + ' mV', 'entre picos');
+    meta.textContent = `${n} muestras · rango ${RANGE_NAME[r.rng] ?? '–'}`;
+    return;
+  }
+  const g = glucose(m);
+  tile(1, labels[0], fmtI(r.i[n - 1])); tile(2, labels[1], fmtI(m), 'σ ' + fmtI(sd));
+  tile(3, labels[2], g === null ? '–' : g.toFixed(1) + ' µM', 'según calibración');
+  meta.textContent = `${n} muestras · rango ${RANGE_NAME[r.rng] ?? '–'}`;
+}
+
+// ------------------------------------------------------------------ historial de mediciones
+function summarize(r, params, reason) {
+  const p = params || {}, t0 = r.meta?.date || new Date().toISOString(), h = hora(t0);
+  const stopped = reason === 'stop' ? ' · detenida' : '';
+  const rn = RANGE_NAME[r.rng] ?? '–', n = r.i.length;
+  if (r.mode === 'cv') {
+    const { kmax, kmin } = cvPeaks(r);
+    return { title: `CV · ${p.n ?? 1} ${(p.n ?? 1) === 1 ? 'ciclo' : 'ciclos'}`, sub: `${h} · ${p.sr ?? '?'} mV/s · ${rn}${stopped}`, val: 'ΔEp ' + Math.abs(r.e[kmin] - r.e[kmax]).toFixed(0) + ' mV', t: t0 };
+  }
+  if (r.mode === 'ocp') return { title: `OCP · ${p.dur ?? '?'} s`, sub: `${h}${stopped}`, val: fmtE(r.e[n - 1]), t: t0 };
+  const { m } = meanSd(r.i, r.sps), g = glucose(m);
+  return { title: `CA · ${p.e ?? 0} mV · ${p.dur ?? '?'} s`, sub: `${h} · rango ${rn}${stopped}`, val: g === null ? fmtI(m) : g.toFixed(1) + ' µM', t: t0 };
+}
+
+function addHistory(reason) {
+  const r = S.run;
+  if (r.i.length < 2) return;
+  const e = summarize(r, r.meta?.params, reason);
+  e.run = r;
+  S.hist.unshift(e); S.hist = S.hist.slice(0, 40);
+  store('pot_hist', JSON.stringify(S.hist.map(({ title, sub, val, t }) => ({ title, sub, val, t }))));
+  renderHist();
+}
+
+function renderHist() {
+  const box = $('#hist'); box.innerHTML = '';
+  if (!S.hist.length) { const p = document.createElement('p'); p.className = 'empty'; p.textContent = 'Todavía no hay mediciones. Inicia una desde Medir.'; box.appendChild(p); return; }
+  S.hist.forEach((e) => {
+    const it = document.createElement('div'); it.className = 'it';
+    const l = document.createElement('div');
+    const b = document.createElement('b'); b.textContent = e.title;
+    const s = document.createElement('small'); s.textContent = e.sub;
+    l.append(b, s);
+    const rgt = document.createElement('div'); rgt.className = 'v'; rgt.textContent = e.val;
+    if (e.run) {
+      const d = document.createElement('button'); d.type = 'button'; d.textContent = 'CSV'; d.setAttribute('aria-label', 'Exportar ' + e.title + ' a CSV');
+      d.onclick = () => downloadCsv(e.run);
+      const wrap = document.createElement('div'); wrap.style.cssText = 'display:flex;align-items:center;gap:8px'; wrap.append(rgt, d);
+      it.append(l, wrap);
+    } else it.append(l, rgt);
+    box.appendChild(it);
+  });
+}
+
+function applyFilter() {
+  $$('#filt button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.f === S.filter)));
+  $('#secMed').hidden = S.filter === 'dev';
+  $('#secDev').hidden = S.filter === 'med';
+}
+
+// ------------------------------------------------------------------ pantallas y controles
+const TITLES = { medir: 'Medir', reg: 'Registro', aj: 'Ajustes' };
+function showPage(p) {
+  S.page = p;
+  ['medir', 'reg', 'aj'].forEach((k) => ($('#pg-' + k).hidden = k !== p));
+  $$('.nav button').forEach((b) => (p === b.dataset.page ? b.setAttribute('aria-current', 'page') : b.removeAttribute('aria-current')));
+  $('#pgTitle').textContent = TITLES[p];
+  if (p === 'medir') chart.request();
+  if (p === 'reg') { const l = $('#log'); l.scrollTop = l.scrollHeight; }
+  window.scrollTo(0, 0);
+}
+
+function buildRange() {
+  const box = $('#rng'); box.innerHTML = '';
+  [{ v: 'auto', t: 'Auto' }, ...RANGES.map((r, i) => ({ v: String(i), t: r.short }))].forEach((o) => {
+    const b = document.createElement('button'); b.type = 'button'; b.dataset.v = o.v; b.textContent = o.t;
+    b.onclick = () => { S.rngSel = o.v; refreshRange(); parSummary(); };
+    box.appendChild(b);
+  });
+  refreshRange();
+}
+
+function refreshRange() {
+  $$('#rng button').forEach((b) => {
+    b.setAttribute('aria-pressed', String(b.dataset.v === S.rngSel));
+    if (b.dataset.v === 'auto') b.hidden = S.mode === 'cv';
+  });
+  const r = RANGES[parseInt(S.rngSel, 10)];
+  $('#rngHint').textContent = S.rngSel === 'auto' ? 'Rango automático: el equipo elige según la corriente.' : `${r.name} · ${r.fs} a plena escala`;
+}
+
+function parSummary() {
+  const g = (id) => ($('#' + id).value || '–');
+  const rg = S.rngSel === 'auto' ? 'Auto' : RANGES[parseInt(S.rngSel, 10)].short;
+  let s;
+  if (S.mode === 'ca') s = `E ${g('caE')} mV · ${g('caDur')} s · ${g('caSps')}/s · ${rg}`;
+  else if (S.mode === 'cv') s = `${g('cvEs')} → ${g('cvE1')} → ${g('cvE2')} mV · ${g('cvSr')} mV/s · ${g('cvN')} ciclos · ${rg}`;
+  else s = `${g('ocpDur')} s · ${g('ocpSps')}/s`;
+  $('#parSum').textContent = s;
+}
+
 function showMode(mode) {
   S.mode = mode;
   $$('.tab').forEach((t) => t.setAttribute('aria-selected', String(t.dataset.mode === mode)));
   $$('[data-for]').forEach((el) => (el.hidden = el.dataset.for !== mode));
+  $('#rngBox').hidden = mode === 'ocp';
+  if (mode === 'cv' && S.rngSel === 'auto') S.rngSel = '0';
+  refreshRange(); parSummary();
+  if (!S.running && S.run.mode !== mode) { S.run = { mode, sps: S.run.sps, rng: S.run.rng, n: 0, t: [], e: [], i: [], meta: null }; refreshPlot(); refreshStats(); updateButtons(); }
 }
 
 const num = (id) => parseFloat($('#' + id).value);
-const rngVal = (id) => { const v = $('#' + id).value; return v === 'auto' ? 'auto' : parseInt(v, 10); };
+const rngCmd = () => (S.rngSel === 'auto' ? 'auto' : parseInt(S.rngSel, 10));
 
 function buildCommand() {
-  if (S.mode === 'ca') return { c: 'ca', e: num('caE'), dur: num('caDur'), sps: num('caSps'), rng: rngVal('caRng'), settle: num('caSettle') };
-  if (S.mode === 'cv') return { c: 'cv', es: num('cvEs'), e1: num('cvE1'), e2: num('cvE2'), sr: num('cvSr'), n: num('cvN'), rng: rngVal('cvRng') };
+  if (S.mode === 'ca') return { c: 'ca', e: num('caE'), dur: num('caDur'), sps: num('caSps'), rng: rngCmd(), settle: num('caSettle') };
+  if (S.mode === 'cv') return { c: 'cv', es: num('cvEs'), e1: num('cvE1'), e2: num('cvE2'), sr: num('cvSr'), n: num('cvN'), rng: rngCmd() === 'auto' ? 0 : rngCmd() };
   return { c: 'ocp', dur: num('ocpDur'), sps: num('ocpSps') };
 }
 
@@ -406,27 +551,33 @@ async function send(obj) {
 }
 
 async function connect(link) {
+  const chip = $('#chip');
   try {
     link.onText = onText; link.onData = onData;
-    link.onClose = () => { S.link = null; S.running = false; setChip('Sin conexión'); log('desconectado'); updateButtons(); };
-    setChip('Conectando…');
+    link.onClose = () => { S.link = null; S.running = false; S.bat = null; log('desconectado'); updateButtons(); };
+    chip.textContent = 'Conectando…'; chip.className = 'chip run';
     await link.connect();
     S.link = link; S.textBuf = '';
-    setChip('Conectado', 'ok'); log(link.kind === 'sim' ? 'simulador conectado' : 'BLE conectado');
+    log(link.kind === 'sim' ? 'simulador conectado' : 'BLE conectado');
     updateButtons();
   } catch (e) {
-    setChip('Sin conexión'); log('no se pudo conectar: ' + e.message); S.link = null; updateButtons();
+    log('no se pudo conectar: ' + e.message); S.link = null; updateButtons();
   }
 }
 
-function toCsv() {
-  const r = S.run, lines = [];
+function toCsv(r) {
+  const lines = [];
   lines.push('# Potenciostato - ' + r.mode.toUpperCase() + ' - ' + (r.meta?.date || ''));
-  lines.push('# sps=' + r.sps + ' rango=' + RANGE_NAME[r.rng] + ' params=' + JSON.stringify(S.pending || {}));
+  lines.push('# sps=' + r.sps + ' rango=' + (RANGE_NAME[r.rng] ?? '?') + ' params=' + JSON.stringify(r.meta?.params || {}));
   lines.push('# corriente positiva = catodica');
   lines.push('idx,t_s,E_mV,I_nA');
   r.i.forEach((v, k) => lines.push([k, r.t[k].toFixed(4), r.e[k].toFixed(1), v.toFixed(3)].join(',')));
   return lines.join('\n') + '\n';
+}
+
+function downloadCsv(r) {
+  const url = URL.createObjectURL(new Blob([toCsv(r)], { type: 'text/csv' }));
+  const a = document.createElement('a'); a.href = url; a.download = `potenciostato_${r.mode}_${Date.now()}.csv`; a.click(); URL.revokeObjectURL(url);
 }
 
 function wire() {
@@ -434,21 +585,23 @@ function wire() {
   $('#btnSim').onclick = () => connect(new SimLink());
   $('#btnDisc').onclick = () => { if (S.link) S.link.disconnect(); };
   $$('.tab').forEach((t) => (t.onclick = () => showMode(t.dataset.mode)));
-  $('#btnStart').onclick = () => { const c = buildCommand(); S.pending = c; send(c); };
-  $('#btnStop').onclick = () => send({ c: 'stop' });
+  $$('.nav button').forEach((b) => (b.onclick = () => showPage(b.dataset.page)));
+  $$('#filt button').forEach((b) => (b.onclick = () => { S.filter = b.dataset.f; applyFilter(); }));
+  $('#btnGo').onclick = () => { if (S.running) send({ c: 'stop' }); else { const c = buildCommand(); S.pending = c; send(c); } };
   $('#btnSimCfg').onclick = () => send({ c: 'sim', glu: num('simGlu'), redox: $('#simRedox').value === '1' ? 1 : 0 });
-  $('#btnClear').onclick = () => { S.run = { mode: S.run.mode, sps: S.run.sps, rng: S.run.rng, n: 0, t: [], e: [], i: [], meta: null }; refreshPlot(); refreshStats(); updateButtons(); };
-  $('#btnCsv').onclick = () => {
-    const url = URL.createObjectURL(new Blob([toCsv()], { type: 'text/csv' }));
-    const a = document.createElement('a'); a.href = url; a.download = `potenciostato_${S.run.mode}_${Date.now()}.csv`; a.click(); URL.revokeObjectURL(url);
-  };
+  $('#btnClear').onclick = () => { if (S.running) return; S.run = { mode: S.mode, sps: S.run.sps, rng: S.run.rng, n: 0, t: [], e: [], i: [], meta: null }; refreshPlot(); refreshStats(); updateButtons(); };
+  $('#btnCsv').onclick = () => { if (S.run.i.length) downloadCsv(S.run); };
+  $('#btnCsv2').onclick = () => { if (S.run.i.length) downloadCsv(S.run); };
   ['calSlope', 'calInt'].forEach((id) => {
-    const el = $('#' + id), saved = localStorage.getItem('pot_' + id);
+    const el = $('#' + id), saved = load('pot_' + id);
     if (saved !== null) el.value = saved;
-    el.addEventListener('input', () => { localStorage.setItem('pot_' + id, el.value); refreshStats(); });
+    el.addEventListener('input', () => { store('pot_' + id, el.value); refreshStats(); });
   });
+  try { S.hist = JSON.parse(load('pot_hist') || '[]'); } catch (e) { S.hist = []; }
   if (!navigator.bluetooth) { $('#btnBle').disabled = true; log('Este navegador no soporta Web Bluetooth: usa Chrome en Android o en el PC. El simulador sí funciona.'); }
-  showMode('ca'); refreshPlot(); refreshStats(); updateButtons();
+  $$('.grid input').forEach((el) => el.addEventListener('input', parSummary));
+  buildRange(); renderHist(); applyFilter();
+  showMode('ca'); showPage('medir'); refreshPlot(); refreshStats(); updateButtons();
 }
 
 wire();
